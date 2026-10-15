@@ -61,12 +61,12 @@ fn shell_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// True when a path is safe to embed without exotic quoting (used as a belt
-/// and braces check alongside js_string_escape / shell_single_quote).
-fn is_simple_path(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'+'))
+/// Reject paths containing control characters (newline, NUL, …). Space and
+/// other printable characters are fine: they are handled by js_string_escape
+/// / shell_single_quote below. A control character in a filesystem path is a
+/// hostile signal, not a normal install location.
+fn has_control_chars(s: &str) -> bool {
+    s.chars().any(|c| c.is_control())
 }
 
 /// Build the plugin file content with the watchdog binary path baked in.
@@ -75,10 +75,9 @@ fn plugin_content() -> Result<String> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "mimo-herdr".to_string());
-    if !is_simple_path(&bin) {
+    if has_control_chars(&bin) {
         bail!(
-            "mimo-herdr path {bin:?} contains characters unsafe to embed in the plugin; \
-             install from a path matching [A-Za-z0-9/._+-]"
+            "mimo-herdr path {bin:?} contains control characters; refusing to embed it"
         );
     }
     Ok(PLUGIN_SRC.replace("__MIMO_HERDR_BIN__", &js_string_escape(&bin)))
@@ -169,6 +168,9 @@ fn install_shim_files() -> Result<()> {
         .context("real opencode not found in PATH; install opencode or use custom mode without --shim")?;
     if !real_opencode.starts_with('/') {
         bail!("resolved opencode must be an absolute path, got {real_opencode:?}");
+    }
+    if has_control_chars(&mimo_bin) || has_control_chars(&real_opencode) {
+        bail!("resolved executable path contains control characters; refusing to write the shim");
     }
 
     let shim = SHIM_SRC
